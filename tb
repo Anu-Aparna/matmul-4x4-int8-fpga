@@ -1,1 +1,126 @@
+tb_matmul.v
+
+`timescale 1ns/1ps
+module tb_matmul;
+
+    reg        clk = 0;
+    reg        rst = 1;
+    reg        wr_en = 0, wr_sel = 0;
+    reg  [3:0] wr_addr = 0;
+    reg  [7:0] wr_data = 0;
+    reg        start = 0;
+    reg  [3:0] rd_addr = 0;
+    wire       done;
+    wire [17:0] rd_data;
+
+    matmul_top dut (
+        .clk(clk), .rst(rst),
+        .wr_en(wr_en), .wr_sel(wr_sel), .wr_addr(wr_addr), .wr_data(wr_data),
+        .start(start), .done(done),
+        .rd_addr(rd_addr), .rd_data(rd_data)
+    );
+
+    always #5 clk = ~clk;            // 10 ns clock
+
+    // Reference copies of the matrices, used to compute expected answers
+    reg signed [7:0] a_ref [0:15];
+    reg signed [7:0] b_ref [0:15];
+
+    integer errors = 0;
+    integer tests  = 0;
+    integer n, r, c, k, t;
+    integer expected;
+    reg signed [17:0] got;
+
+    task write_elem(input sel, input [3:0] addr, input [7:0] data);
+        begin
+            @(negedge clk);
+            wr_en = 1; wr_sel = sel; wr_addr = addr; wr_data = data;
+            @(negedge clk);
+            wr_en = 0;
+        end
+    endtask
+
+    task load_matrices;
+        begin
+            for (n = 0; n < 16; n = n + 1) begin
+                write_elem(1'b0, n[3:0], a_ref[n]);
+                write_elem(1'b1, n[3:0], b_ref[n]);
+            end
+        end
+    endtask
+
+    task run_and_check;
+        begin
+            @(negedge clk); start = 1;
+            @(negedge clk); start = 0;
+            wait (done == 1);
+            @(negedge clk);
+            tests = tests + 1;
+            for (r = 0; r < 4; r = r + 1)
+                for (c = 0; c < 4; c = c + 1) begin
+                    expected = 0;
+                    for (k = 0; k < 4; k = k + 1)
+                        expected = expected + a_ref[r*4+k] * b_ref[k*4+c];
+                    rd_addr = r*4 + c;
+                    #1;
+                    got = rd_data;
+                    if (got !== expected) begin
+                        errors = errors + 1;
+                        $display("MISMATCH test %0d cell (%0d,%0d): got %0d expected %0d",
+                                 tests, r, c, got, expected);
+                    end
+                end
+        end
+    endtask
+
+    initial begin
+        repeat (3) @(negedge clk);
+        rst = 0;
+
+        // Test 1: all zeros
+        for (n = 0; n < 16; n = n + 1) begin a_ref[n] = 0; b_ref[n] = 0; end
+        load_matrices; run_and_check;
+
+        // Test 2: A = 1..16, B = identity (answer must equal A)
+        for (n = 0; n < 16; n = n + 1) begin
+            a_ref[n] = n + 1;
+            b_ref[n] = 0;
+        end
+        for (n = 0; n < 4; n = n + 1) b_ref[n*4+n] = 1;
+        load_matrices; run_and_check;
+
+        // Test 3: all -128 times all -128 (largest possible result)
+        for (n = 0; n < 16; n = n + 1) begin a_ref[n] = -128; b_ref[n] = -128; end
+        load_matrices; run_and_check;
+
+        // Test 4: all +127 times all +127
+        for (n = 0; n < 16; n = n + 1) begin a_ref[n] = 127; b_ref[n] = 127; end
+        load_matrices; run_and_check;
+
+        // Test 5: -128 times +127 (most negative result)
+        for (n = 0; n < 16; n = n + 1) begin a_ref[n] = -128; b_ref[n] = 127; end
+        load_matrices; run_and_check;
+
+        // Tests 6 onward: 200 random matrix pairs
+        for (t = 0; t < 200; t = t + 1) begin
+            for (n = 0; n < 16; n = n + 1) begin
+                a_ref[n] = $random;
+                b_ref[n] = $random;
+            end
+            load_matrices; run_and_check;
+        end
+
+        $display("Finished: %0d tests, %0d errors", tests, errors);
+        if (errors == 0) $display("ALL TESTS PASSED");
+        $finish;
+    end
+
+    // Safety net: stop if the design ever hangs
+    initial begin
+        #5000000;
+        $display("TIMEOUT: design never finished");
+        $finish;
+    end
+endmodule
 
