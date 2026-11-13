@@ -1,1 +1,84 @@
+matmul_top.v
 
+
+module matmul_top (
+    input  wire        clk,
+    input  wire        rst,       // active high reset
+    // load interface
+    input  wire        wr_en,     // 1 = write wr_data into memory this clock
+    input  wire        wr_sel,    // 0 = matrix A, 1 = matrix B
+    input  wire [3:0]  wr_addr,   // element number 0..15 (row*4 + column)
+    input  wire [7:0]  wr_data,   // signed 8-bit value
+    // control
+    input  wire        start,     // pulse high for one clock to begin
+    output reg         done,      // 1 when the result is ready
+    // read interface
+    input  wire [3:0]  rd_addr,   // which result element to read
+    output wire [17:0] rd_data    // signed 18-bit result element
+);
+
+    // Storage: three small memories built from flip-flops
+    reg signed [7:0]  a_mem [0:15];
+    reg signed [7:0]  b_mem [0:15];
+    reg signed [17:0] c_mem [0:15];
+
+    // Counters: i = row of A, j = column of B, k = which of the 4 terms
+    reg [1:0] i, j, k;
+    reg       busy;
+    reg signed [17:0] acc;        // running sum for the current cell
+
+    // {i,k} glues two 2-bit numbers into one 4-bit number = i*4 + k
+    wire [3:0] a_idx = {i, k};
+    wire [3:0] b_idx = {k, j};
+    wire [3:0] c_idx = {i, j};
+
+    wire signed [7:0]  a_elem = a_mem[a_idx];
+    wire signed [7:0] b_elem = b_mem[b_idx];
+    wire signed [15:0] prod   = a_elem * b_elem;
+    wire signed [17:0] sum    = acc + prod;
+
+    always @(posedge clk) begin
+        // Loading is only allowed while idle
+        if (wr_en && !busy) begin
+            if (wr_sel) b_mem[wr_addr] <= wr_data;
+            else        a_mem[wr_addr] <= wr_data;
+        end
+
+        if (rst) begin
+            busy <= 1'b0;
+            done <= 1'b0;
+            i <= 2'd0; j <= 2'd0; k <= 2'd0;
+            acc <= 18'sd0;
+        end else if (!busy) begin
+            if (start) begin
+                busy <= 1'b1;
+                done <= 1'b0;
+                i <= 2'd0; j <= 2'd0; k <= 2'd0;
+                acc <= 18'sd0;
+            end
+        end else begin
+            if (k == 2'd3) begin
+                c_mem[c_idx] <= sum;          // cell finished, store it
+                acc <= 18'sd0;
+                k   <= 2'd0;
+                if (j == 2'd3) begin
+                    j <= 2'd0;
+                    if (i == 2'd3) begin
+                        busy <= 1'b0;         // all 16 cells finished
+                        done <= 1'b1;
+                    end else begin
+                        i <= i + 2'd1;
+                    end
+                end else begin
+                    j <= j + 2'd1;
+                end
+            end else begin
+                acc <= sum;                   // add this term and continue
+                k   <= k + 2'd1;
+            end
+        end
+    end
+
+    assign rd_data = c_mem[rd_addr];
+
+endmodule
